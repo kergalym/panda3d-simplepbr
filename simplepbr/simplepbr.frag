@@ -6,14 +6,14 @@
     #define MAX_LIGHTS 8
 #endif
 
-uniform struct {
+uniform struct p3d_MaterialParameters {
     vec4 baseColor;
     float roughness;
     float metallic;
     float refractiveIndex;
 } p3d_Material;
 
-uniform struct {
+uniform struct p3d_LightSourceParameters {
     vec4 position;
     vec4 diffuse;
     vec4 specular;
@@ -21,13 +21,24 @@ uniform struct {
     vec3 spotDirection;
     float spotCosCutoff;
     float spotExponent;
-    //sampler2DShadow shadowMap;
-    //mat4 shadowMatrix;
+#ifdef ENABLE_SHADOWS
+    sampler2DShadow shadowMap;
+    mat4 shadowViewMatrix;
+#endif
 } p3d_LightSource[MAX_LIGHTS];
 
-uniform struct {
+uniform struct p3d_LightModelParameters {
     vec4 ambient;
 } p3d_LightModel;
+
+#ifdef ENABLE_FOG
+uniform struct p3d_FogParameters {
+    vec4 color;
+    float density;
+} p3d_Fog;
+#endif
+
+uniform vec4 p3d_ColorScale;
 
 struct FunctionParamters {
     float n_dot_l;
@@ -43,23 +54,27 @@ struct FunctionParamters {
     vec3 specular_color;
 };
 
-uniform sampler2D p3d_Texture0;
-uniform sampler2D p3d_Texture1;
+// Give texture slots names
+#define p3d_TextureBaseColor p3d_Texture0
+#define p3d_TextureMetalRoughness p3d_Texture1
+#define p3d_TextureNormal p3d_Texture2
+
+uniform sampler2D p3d_TextureBaseColor;
+uniform sampler2D p3d_TextureMetalRoughness;
+uniform sampler2D p3d_TextureNormal;
 
 const vec3 F0 = vec3(0.04);
-const float MIN_ROUGHNESS = 0.04;
 const float PI = 3.141592653589793;
 const float SPOTSMOOTH = 0.001;
 const float LIGHT_CUTOFF = 0.001;
 
 varying vec3 v_position;
-varying vec3 v_normal;
+varying vec4 v_color;
 varying vec2 v_texcoord;
-
-// Give texture slots names
-#define p3d_TextureBaseColor p3d_Texture0
-#define p3d_TextureMetalRoughness p3d_Texture1
-#define p3d_TextureNormals p3d_Texture2
+varying mat3 v_tbn;
+#ifdef ENABLE_SHADOWS
+varying vec4 v_shadow_pos[MAX_LIGHTS];
+#endif
 
 // Schlick's Fresnel approximation
 vec3 specular_reflection(FunctionParamters func_params) {
@@ -97,16 +112,21 @@ vec3 diffuse_function(FunctionParamters func_params) {
 
 void main() {
     vec4 metal_rough = texture2D(p3d_TextureMetalRoughness, v_texcoord);
-    float metallic = clamp(p3d_Material.metallic * metal_rough.g, 0.0, 1.0);
-    float roughness = clamp(p3d_Material.roughness * metal_rough.b,  MIN_ROUGHNESS, 1.0);
-    vec4 base_color = p3d_Material.baseColor * texture2D(p3d_TextureBaseColor, v_texcoord);
+    float metallic = clamp(p3d_Material.metallic * metal_rough.b, 0.0, 1.0);
+    float perceptual_roughness = clamp(p3d_Material.roughness * metal_rough.g,  0.0, 1.0);
+    float alpha_roughness = perceptual_roughness * perceptual_roughness;
+    vec4 base_color = p3d_Material.baseColor * v_color * p3d_ColorScale * texture2D(p3d_TextureBaseColor, v_texcoord);
     vec3 diffuse_color = (base_color.rgb * (vec3(1.0) - F0)) * (1.0 - metallic);
     vec3 spec_color = mix(F0, base_color.rgb, metallic);
-    vec3 reflection90 = vec3(clamp(max(max(spec_color.r, spec_color.g), spec_color.b) * 25.0, 0.0, 1.0));
-    vec3 n = v_normal;
+    vec3 reflection90 = vec3(clamp(max(max(spec_color.r, spec_color.g), spec_color.b) * 50.0, 0.0, 1.0));
+#ifdef USE_NORMAL_MAP
+    vec3 n = normalize(v_tbn * (2.0 * texture2D(p3d_TextureNormal, v_texcoord).rgb - 1.0));
+#else
+    vec3 n = v_tbn[2];
+#endif
     vec3 v = normalize(-v_position);
 
-    vec4 color = vec4(0.0);
+    vec4 color = vec4(vec3(0.0), base_color.a);
 
     for (int i = 0; i < p3d_LightSource.length(); ++i) {
         vec3 lightcol = p3d_LightSource[i].diffuse.rgb;
@@ -120,7 +140,13 @@ void main() {
         vec3 r = -normalize(reflect(l, n));
         float spotcos = dot(normalize(p3d_LightSource[i].spotDirection), -l);
         float spotcutoff = p3d_LightSource[i].spotCosCutoff;
-        float shadow = smoothstep(spotcutoff-SPOTSMOOTH, spotcutoff+SPOTSMOOTH, spotcos);
+        float shadowSpot = smoothstep(spotcutoff-SPOTSMOOTH, spotcutoff+SPOTSMOOTH, spotcos);
+#ifdef ENABLE_SHADOWS
+        float shadowCaster = shadow2DProj(p3d_LightSource[i].shadowMap, v_shadow_pos[i]).r;
+#else
+        float shadowCaster = 1.0;
+#endif
+        float shadow = shadowSpot * shadowCaster;
 
         FunctionParamters func_params;
         func_params.n_dot_l = clamp(dot(n, l), 0.001, 1.0);
@@ -128,7 +154,7 @@ void main() {
         func_params.n_dot_h = clamp(dot(n, h), 0.0, 1.0);
         func_params.l_dot_h = clamp(dot(l, h), 0.0, 1.0);
         func_params.v_dot_h = clamp(dot(v, h), 0.0, 1.0);
-        func_params.roughness = roughness;
+        func_params.roughness = alpha_roughness;
         func_params.metallic =  metallic;
         func_params.reflection0 = spec_color;
         func_params.reflection90 = reflection90;
@@ -145,6 +171,13 @@ void main() {
     }
 
     color.rgb += p3d_LightModel.ambient.rgb;
+
+#ifdef ENABLE_FOG
+    // Exponential fog
+    float fog_distance = length(v_position);
+    float fog_factor = clamp(1.0 / exp(fog_distance * p3d_Fog.density), 0.0, 1.0);
+    color = mix(p3d_Fog.color, color, fog_factor);
+#endif
 
     gl_FragColor = color;
 }

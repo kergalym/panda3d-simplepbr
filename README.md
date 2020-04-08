@@ -11,16 +11,17 @@ The PBR shader is heavily inspired by the [Khronos glTF Sample Viewer](https://g
 *Note:* this project does not make an attempt to match a reference renderer.
 
 ## Features
-* Supports running on potatoes with an easy OpenGL 2.1+ requirement
+* Supports running on a wide range of hardware with an easy OpenGL 2.1+ requirement
 * Forward rendered metal-rough PBR
-* All Panda3D light types except ambient (point, directional, and spot)
+* All Panda3D light types (point, directional, spot, and ambient)
 * Filmic tonemapping 
+* Normal maps
+* Basic shadow mapping for DirectionalLight and Spotlight
 
 ## Notable Todos
 There are a few big things still missing and are planned to be implemented:
 
-* Normals
-* Shadow mapping
+* Shadow mapping for PointLight
 * Environment maps
 
 ## Other missing features
@@ -70,6 +71,18 @@ The `init()` function will choose typical defaults, but the following can be mod
 : The window to attach the framebuffer too, defaults to `base.win` if `None`
 `camera_node`
 : The NodePath of the camera to use when rendering the scene, defaults to `base.cam` if `None`
+`msaa_samples`
+: The number of samples to use for multisample anti-aliasing, defaults to 4
+`max_lights`
+: The maximum number of lights to render, defaults to 8
+`use_normal_maps`
+: Use normal maps to modify fragment normals, defaults to `False` (NOTE: Requires models with appropriate tangents defined)
+`enable_shadows`
+: Enable shadow map support (breaks with point lights), defaults to False
+`enable_fog`
+: Enable exponential fog, defaults to False
+`exposure`
+: a value used to multiply the screen-space color value prior to tonemapping, defaults to 1.0
 
 ### Textures
 
@@ -77,11 +90,29 @@ The shader currently assumes that the following textures are in these slots:
 
 0. BaseColor
 1. MetalRoughness
-2. Normals (not currently supported)
+2. Normals
 
 ## Example
 
 For an example application using `panda3d-simplepbr` check out the [viewer](https://github.com/Moguri/panda3d-gltf/blob/master/gltf/viewer.py) in the [panda3d-gltf repo](https://github.com/Moguri/panda3d-gltf).
+
+## Distributing
+
+When using Panda3D's `build_apps` the data files (i.e., shader files) will not be copied by default.
+Options are being explored to make this more automatic, but for the time being, add the following to `setup.py`:
+
+```python
+setup(
+    # ...
+    'package_data_dirs': {
+        'simplepbr': [
+            ('simplepbr/*.vert', '', {}),
+            ('simplepbr/*.frag', '', {}),
+         ],
+     }
+     # ...
+)
+```
 
 ## Running tests
 ```bash
